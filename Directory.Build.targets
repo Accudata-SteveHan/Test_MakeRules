@@ -1,0 +1,350 @@
+<Project>
+  <!-- 使用 MSBuild 的 CodeTaskFactory 內嵌 C# 實作，於建置時輸出 Reference.json -->
+  <UsingTask
+    TaskName="GenerateReferenceJson"
+    TaskFactory="CodeTaskFactory"
+    AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+
+    <!-- ParameterGroup 必須是 UsingTask 的直接子節點 -->
+    <ParameterGroup>
+      <ProjectRoot ParameterType="System.String" Required="true" />
+      <OutputFile ParameterType="System.String" Required="true" />
+    </ParameterGroup>
+
+    <Task>
+      <!-- 編譯內嵌程式碼時需要的參考 -->
+      <Reference Include="System.Core" />
+      <Reference Include="System.Xml" />
+      <Reference Include="System.Xml.Linq" />
+      <Reference Include="System.Runtime" />
+
+      <Code Type="Class" Language="cs">
+        <![CDATA[
+using System;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Xml.Linq;
+using System.Collections.Generic;
+using Microsoft.Build.Framework;
+using Microsoft.Build.Utilities;
+
+public class GenerateReferenceJson : Task
+{
+    [Required]
+    public string ProjectRoot { get; set; }
+
+    [Required]
+    public string OutputFile { get; set; }
+
+    public override bool Execute()
+    {
+        try
+        {
+            string[] projectFiles = Directory.GetFiles(ProjectRoot, "*.csproj", SearchOption.AllDirectories);
+            Dictionary<string, ReferenceEntry> map = new Dictionary<string, ReferenceEntry>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (string projPath in projectFiles)
+            {
+                XDocument doc = XDocument.Load(projPath);
+
+                string targetFramework = GetSingleValue(doc, "/Project/PropertyGroup/TargetFramework");
+                if (string.IsNullOrEmpty(targetFramework))
+                {
+                    string tfs = GetSingleValue(doc, "/Project/PropertyGroup/TargetFrameworks");
+                    if (!string.IsNullOrEmpty(tfs))
+                    {
+                        string[] parts = tfs.Split(';');
+                        targetFramework = parts.Length > 0 ? parts[0] : "";
+                    }
+                }
+
+                // PackageReference
+                foreach (XElement pkg in doc.Descendants().Where(e => e.Name.LocalName == "PackageReference"))
+                {
+                    string pkgId = (string)pkg.Attribute("Include") ?? "";
+                    string pkgVer = (string)pkg.Attribute("Version") ?? GetChildValue(pkg, "Version") ?? "";
+
+                    ReferenceEntry entry = new ReferenceEntry
+                    {
+                        Name = pkgId,
+                        Source = "NuGet",
+                        SourcePath = "",
+                        PackageId = pkgId,
+                        PackageVersion = pkgVer,
+                        TargetFramework = targetFramework,
+                        PublishTarget = "",
+                        Publisher = "",
+                        AddedDate = DateTime.UtcNow.ToString("s") + "Z",
+                        Notes = ""
+                    };
+
+                    string key = entry.Key();
+                    if (!map.ContainsKey(key))
+                    {
+                        map.Add(key, entry);
+                    }
+                }
+
+                // ProjectReference
+                foreach (XElement pr in doc.Descendants().Where(e => e.Name.LocalName == "ProjectReference"))
+                {
+                    string include = (string)pr.Attribute("Include") ?? "";
+                    string projName = Path.GetFileNameWithoutExtension(include);
+
+                    ReferenceEntry entry = new ReferenceEntry
+                    {
+                        Name = projName,
+                        Source = "Project",
+                        SourcePath = include,
+                        PackageId = "",
+                        PackageVersion = "",
+                        TargetFramework = targetFramework,
+                        PublishTarget = "",
+                        Publisher = "Internal",
+                        AddedDate = DateTime.UtcNow.ToString("s") + "Z",
+                        Notes = "ProjectReference from csproj"
+                    };
+
+                    string key = entry.Key();
+                    if (!map.ContainsKey(key))
+                    {
+                        map.Add(key, entry);
+                    }
+                }
+
+                // Reference (assembly) with optional HintPath
+                foreach (XElement r in doc.Descendants().Where(e => e.Name.LocalName == "Reference"))
+                {
+                    string incl = (string)r.Attribute("Include") ?? "";
+                    string hint = GetChildValue(r, "HintPath") ?? "";
+                    string nameOnly = incl.Split(',').FirstOrDefault() ?? incl;
+
+                    string version = "";
+                    int idx = incl.IndexOf("Version=", StringComparison.OrdinalIgnoreCase);
+                    if (idx >= 0)
+                    {
+                        int start = idx + "Version=".Length;
+                        int end = incl.IndexOf(',', start);
+                        if (end < 0)
+                        {
+                            end = incl.Length;
+                        }
+
+                        version = incl.Substring(start, end - start).Trim();
+                    }
+
+                    string sourceType = string.IsNullOrEmpty(hint) ? "Framework" : "File";
+
+                    ReferenceEntry entry = new ReferenceEntry
+                    {
+                        Name = nameOnly,
+                        Source = sourceType,
+                        SourcePath = string.IsNullOrEmpty(hint) ? ("GAC or framework - see TargetFramework " + targetFramework) : hint,
+                        PackageId = "",
+                        PackageVersion = version,
+                        TargetFramework = targetFramework,
+                        PublishTarget = "",
+                        Publisher = nameOnly.StartsWith("System", StringComparison.OrdinalIgnoreCase) || nameOnly.StartsWith("Microsoft", StringComparison.OrdinalIgnoreCase) ? "Microsoft" : "",
+                        AddedDate = DateTime.UtcNow.ToString("s") + "Z",
+                        Notes = "Assembly reference from csproj"
+                    };
+
+                    string key = entry.Key();
+                    if (!map.ContainsKey(key))
+                    {
+                        map.Add(key, entry);
+                    }
+                }
+
+                // FrameworkReference
+                foreach (XElement fr in doc.Descendants().Where(e => e.Name.LocalName == "FrameworkReference"))
+                {
+                    string name = (string)fr.Attribute("Include") ?? "";
+
+                    ReferenceEntry entry = new ReferenceEntry
+                    {
+                        Name = name,
+                        Source = "Framework",
+                        SourcePath = "SDK/Runtime framework reference - check SDK version",
+                        PackageId = "",
+                        PackageVersion = "",
+                        TargetFramework = targetFramework,
+                        PublishTarget = "",
+                        Publisher = "Microsoft",
+                        AddedDate = DateTime.UtcNow.ToString("s") + "Z",
+                        Notes = "FrameworkReference entry from csproj"
+                    };
+
+                    string key = entry.Key();
+                    if (!map.ContainsKey(key))
+                    {
+                        map.Add(key, entry);
+                    }
+                }
+            }
+
+            // Build JSON
+            string json = BuildJson(map.Values.ToList());
+            string outDir = Path.GetDirectoryName(OutputFile);
+            if (!string.IsNullOrEmpty(outDir) && !Directory.Exists(outDir))
+            {
+                Directory.CreateDirectory(outDir);
+            }
+
+            File.WriteAllText(OutputFile, json, Encoding.UTF8);
+            Log.LogMessage(MessageImportance.High, "Reference.json generated at: " + OutputFile);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.LogErrorFromException(ex, true);
+            return false;
+        }
+    }
+
+    private static string GetSingleValue(XDocument doc, string xpath)
+    {
+        XElement el = doc.Root.Descendants().FirstOrDefault(e => ("/" + e.Name.LocalName) == xpath);
+        if (el != null)
+        {
+            return el.Value.Trim();
+        }
+
+        return "";
+    }
+
+    private static string GetChildValue(XElement parent, string name)
+    {
+        XElement child = parent.Elements().FirstOrDefault(e => e.Name.LocalName == name);
+        return child != null ? child.Value.Trim() : null;
+    }
+
+    private static string BuildJson(List<ReferenceEntry> list)
+    {
+        StringBuilder sb = new StringBuilder();
+        sb.Append("{\"References\": [");
+
+        bool first = true;
+        foreach (ReferenceEntry e in list)
+        {
+            if (!first)
+            {
+                sb.Append(",");
+            }
+
+            sb.Append(Environment.NewLine);
+            sb.Append("  {");
+            sb.AppendFormat("\"Name\": \"{0}\",", JsonEscape(e.Name));
+            sb.AppendFormat("\"Source\": \"{0}\",", JsonEscape(e.Source));
+            sb.AppendFormat("\"SourcePath\": \"{0}\",", JsonEscape(e.SourcePath));
+            sb.AppendFormat("\"PackageId\": \"{0}\",", JsonEscape(e.PackageId));
+            sb.AppendFormat("\"PackageVersion\": \"{0}\",", JsonEscape(e.PackageVersion));
+            sb.AppendFormat("\"TargetFramework\": \"{0}\",", JsonEscape(e.TargetFramework));
+            sb.AppendFormat("\"PublishTarget\": \"{0}\",", JsonEscape(e.PublishTarget));
+            sb.AppendFormat("\"Publisher\": \"{0}\",", JsonEscape(e.Publisher));
+            sb.AppendFormat("\"AddedDate\": \"{0}\",", JsonEscape(e.AddedDate));
+            sb.AppendFormat("\"Notes\": \"{0}\"", JsonEscape(e.Notes));
+            sb.Append(" }");
+            first = false;
+        }
+
+        if (list.Count > 0)
+        {
+            sb.Append(Environment.NewLine);
+        }
+
+        sb.Append("]}");
+        return sb.ToString();
+    }
+
+    private static string JsonEscape(string s)
+    {
+        if (string.IsNullOrEmpty(s))
+        {
+            return "";
+        }
+
+        StringBuilder sb = new StringBuilder();
+        foreach (char c in s)
+        {
+            switch (c)
+            {
+                case '\\':
+                    sb.Append("\\\\");
+                    break;
+                case '\"':
+                    sb.Append("\\\"");
+                    break;
+                case '\b':
+                    sb.Append("\\b");
+                    break;
+                case '\f':
+                    sb.Append("\\f");
+                    break;
+                case '\n':
+                    sb.Append("\\n");
+                    break;
+                case '\r':
+                    sb.Append("\\r");
+                    break;
+                case '\t':
+                    sb.Append("\\t");
+                    break;
+                default:
+                    if (c < 32)
+                    {
+                        sb.AppendFormat("\\u{0:X4}", (int)c);
+                    }
+                    else
+                    {
+                        sb.Append(c);
+                    }
+
+                    break;
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    private class ReferenceEntry
+    {
+        public string Name;
+        public string Source;
+        public string SourcePath;
+        public string PackageId;
+        public string PackageVersion;
+        public string TargetFramework;
+        public string PublishTarget;
+        public string Publisher;
+        public string AddedDate;
+        public string Notes;
+
+        public string Key()
+        {
+            return (Name ?? "") + "|" + (Source ?? "") + "|" + (TargetFramework ?? "");
+        }
+    }
+}
+        ]]>
+      </Code>
+    </Task>
+  </UsingTask>
+
+  <!-- 在整體建置結束後產生 Reference.json（OutputFile 放在專案根目錄） -->
+  <Target Name="GenerateReferenceJsonTarget" AfterTargets="Build"
+          Condition="'$(GenerateReferenceJsonDone)' != 'true'">
+    <PropertyGroup>
+      <_RepoRoot>$(MSBuildThisFileDirectory)</_RepoRoot>
+      <_ReferenceJson>$(_RepoRoot)Reference.json</_ReferenceJson>
+    </PropertyGroup>
+
+    <GenerateReferenceJson ProjectRoot="$(_RepoRoot)" OutputFile="$(_ReferenceJson)" />
+
+    <!-- 避免重複執行 -->
+    <PropertyGroup>
+      <GenerateReferenceJsonDone>true</GenerateReferenceJsonDone>
+    </PropertyGroup>
+  </Target>
+</Project>

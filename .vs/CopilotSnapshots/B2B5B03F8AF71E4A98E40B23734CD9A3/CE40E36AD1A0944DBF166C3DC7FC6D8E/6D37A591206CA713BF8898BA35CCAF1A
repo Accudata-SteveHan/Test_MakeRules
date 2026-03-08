@@ -56,7 +56,7 @@
 - 類別與函式之間：在不同類別（`class`、`struct`、`interface`）與方法（function / method）之間，應保留至少一行空白以提高段落性與人工閱讀性。
 - 類別內成員之間：同一類別內的成員（欄位、屬性、建構子、方法、事件）之間應保留一行空白，以便區隔邏輯區塊。
 - 控制區塊後的空白行：在 `if`、`for`、`while`、`switch` 等控制區塊結束（右大括號 `}`）後，除非下一行緊接的是 `else` 或 `else if`，否則必須插入一個空白行以改善段落感與可讀性。對於 `try`/`catch`/`finally`，若下一行緊接的是 `catch` 或 `finally`，可不插入空白行；否則亦應插入空白行。
-- 例外情況：為了維持語意的緊密性（例如 `if` 比較緊密地跟著 `else`），可不插入空白行；但對於其它情形應強制插入。
+- 例外情況：為了維持語意的緊密性（例如 `if` 比較緊密地跟着 `else`），可不插入空白行；但對於其它情形應強制插入。
 - 自動化檢查：建議在 CI 或 pre-commit 階段使用格式化/分析工具（例如 `dotnet format`、Roslyn 分析器或自訂規則）來驗證上述間距規則，並在 PR 審查中強制執行。
 
 ## 套件管理與相依性（NuGet）
@@ -75,7 +75,7 @@
 - 必要紀錄欄位（每個參考項目）：
   - `Name`：參考顯示名稱（例如 `Newtonsoft.Json` 或 `MyCompany.Common`）。
   - `Source`：來源類型，列舉 `NuGet`、`File`（直接 DLL 參考）、`Project`（專案參考）、`Framework`（作業系統/Runtime/SDK 內建元件）等。
-  - `SourcePath`：來源路徑或 DLL 檔名（若為 NuGet，可記錄 package id 與已還原的 packages 資訊，例如 `packages\\Newtonsoft.Json.13.0.1\\lib\\net6.0\\Newtonsoft.Json.dll`；若為 Framework，記錄如 `GAC`、`runtime\\shared\\Microsoft.NETCore.App\\X.Y.Z` 或 SDK 來源說明）。
+  - `SourcePath`：來源路徑或 DLL 檔名（若為 NuGet，可記錄 package id 與已還原的 packages 資訊，例如 `packages\\Newtonsoft.Json.13.0.1\\lib\\net6.0\\Newtonsoft.Json.dll`；若為 Framework，記錄如 `GAC`、`runtime\shared\Microsoft.NETCore.App\X.Y.Z` 或 SDK 來源說明）。
   - `PackageId`（可選）：若來源為 `NuGet`，填入套件識別碼。
   - `PackageVersion`（可選）：若來源為 `NuGet`，填入套件版本（SemVer）。
   - `TargetFramework`：編譯目標（例如 `net6.0`、`net48`）。
@@ -92,8 +92,6 @@
   - Microsoft 相關元件（例如 `Microsoft.*`、`System.*` runtime/SDK 元件或 framework assemblies）亦必須在 `Reference.json` 中建立對應條目。對於此類元件：
     - 若為 NuGet 套件形式安裝（例如 `Microsoft.Extensions.*`），請以 `Source: "NuGet"` 並填寫 `PackageId`/`PackageVersion` 與 `SourcePath`。
     - 若為 SDK/Runtime 內建或 framework reference（未透過 NuGet 管理，例如 platform/reference assemblies 或由 SDK 提供），請以 `Source: "Framework"` 或 `Source: "Runtime"` 並在 `SourcePath` 註明來源（例如 SDK 版本、runtime shared path 或 GAC），同時在 `Publisher` 欄標示 `Microsoft`。
-    - 強制要求列舉 core framework assemblies：所有由 runtime/SDK 或 framework 提供且在編譯或執行時被載入的核心 assembly（例如 `System.Core`、`System.Xml`、`mscorlib`、`System.Private.CoreLib` 等）必須在 `Reference.json` 中列出，除非專案明確在 PR 中說明不包含該 assembly 的理由並經團隊核准。
-    - 在列舉此類核心 assembly 時，請在 `SourcePath` 標註來源（例如 `GAC`、SDK 版本或 runtime shared path），並在 `PackageVersion` 或 `Notes` 中記錄 assembly 版本號以利相容性檢查。
     - 必須在 PR 中說明新增或變更的 Microsoft 元件對目標 framework/runtime 的相容性檢查結果（例如測試、binding redirects、runtime checks），並在 CI 中驗證在目標 Runtime 上成功還原與建置。
   - 每次變更參考（新增、移除、版本升級）時，PR 內必須包含 `Reference.json` 的同步變更，且在 PR 描述中列出變更摘要。
   - 建議在 CI 中加入驗證步驟，檢查 `Reference.json` 與實際專案檔（csproj / props / targets）中列出的參考是否一致；若不一致則使 CI 失敗並要求修正。對 Microsoft framework/runtime references，CI 應檢查目標 SDK/runtime 版本是否滿足紀錄。
@@ -125,18 +123,6 @@
               "Publisher": "Microsoft",
               "AddedDate": "2025-12-01T12:00:00Z",
               "Notes": "Runtime framework provided by SDK/runtime"
-          },
-          {
-              "Name": "System.Core",
-              "Source": "Framework",
-              "SourcePath": "GAC",
-              "PackageId": "",
-              "PackageVersion": "4.0.0.0",
-              "TargetFramework": "net48",
-              "PublishTarget": "",
-              "Publisher": "Microsoft",
-              "AddedDate": "2026-03-09T00:00:00Z",
-              "Notes": "Framework assembly - core LINQ types"
           }
       ]
   }
@@ -156,4 +142,4 @@
 
 ---
 
-若需本規範的範例程式碼片段、`Reference.json` 範本、或要我同時建立/提交 `Reference.json` 與/或 `.editorconfig`（例如設定 4 空格縮排與大括號風格檢查）來搭配此規範，請回覆告知，我會一併建立。
+若需本規範的範例程式碼片段、`Reference.json` 範本、或要我同時建立/提交 `Reference.json` 與/或 `.editorconfig`（例如設定 4 空格縮排與大括號風格檢查）來搭配此規範，請回覆告知，我會一併建立
