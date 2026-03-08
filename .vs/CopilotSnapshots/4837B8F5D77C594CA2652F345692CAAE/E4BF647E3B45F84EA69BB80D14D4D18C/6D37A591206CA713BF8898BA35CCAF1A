@@ -56,7 +56,7 @@
 - 類別與函式之間：在不同類別（`class`、`struct`、`interface`）與方法（function / method）之間，應保留至少一行空白以提高段落性與人工閱讀性。
 - 類別內成員之間：同一類別內的成員（欄位、屬性、建構子、方法、事件）之間應保留一行空白，以便區隔邏輯區塊。
 - 控制區塊後的空白行：在 `if`、`for`、`while`、`switch` 等控制區塊結束（右大括號 `}`）後，除非下一行緊接的是 `else` 或 `else if`，否則必須插入一個空白行以改善段落感與可讀性。對於 `try`/`catch`/`finally`，若下一行緊接的是 `catch` 或 `finally`，可不插入空白行；否則亦應插入空白行。
-- 例外情況：為了維持語意的緊密性（例如 `if` 比較緊密地跟着 `else`），可不插入空白行；但對於其它情形應強制插入。
+- 例外情況：為了維持語意的緊密性（例如 `if` 比較緊密地跟著 `else`），可不插入空白行；但對於其它情形應強制插入。
 - 自動化檢查：建議在 CI 或 pre-commit 階段使用格式化/分析工具（例如 `dotnet format`、Roslyn 分析器或自訂規則）來驗證上述間距規則，並在 PR 審查中強制執行。
 
 ## 套件管理與相依性（NuGet）
@@ -70,49 +70,6 @@
   - 若更新後仍無法正常運作，不得使用條件編譯（例如 `#if`）或其他暫時性繞過方式來規避問題；必須完整排查問題來源（例如版本衝突、API 變更、相依性不全、設定錯誤），並在修復後再次驗證。
   - 編譯後若仍無法正常運作，不可使用 `#if` 或其他條件編譯指示來規避問題；必須完整排查問題來源，並在修復後再次驗證。
 
-## 參考清單檔案（Reference.json）
-- 於專案根目錄建立 `Reference.json` 作為目前載入參考的清單與狀態紀錄，用以檢查專案間相依性與發行風險。此檔案為專案層級的紀錄，變更參考時必須同步更新。
-- 必要紀錄欄位（每個參考項目）：
-  - `Name`：參考顯示名稱（例如 `Newtonsoft.Json` 或 `MyCompany.Common`）。
-  - `Source`：來源類型，列舉 `NuGet`、`File`（直接 DLL 參考）、`Project`（專案參考）等。
-  - `SourcePath`：來源路徑或 DLL 檔名（若為 NuGet，可記錄 package id 與已還原的 packages 資訊，例如 `packages\Newtonsoft.Json.13.0.1\lib\net6.0\Newtonsoft.Json.dll`）。
-  - `PackageId`（可選）：若來源為 `NuGet`，填入套件識別碼。
-  - `PackageVersion`（可選）：若來源為 `NuGet`，填入套件版本（SemVer）。
-  - `TargetFramework`：編譯目標（例如 `net6.0`、`net48`）。
-  - `PublishTarget`（可選）：發行/執行目標（例如 Runtime Identifier 或發行平台資訊）。
-  - `AddedDate`：加入清單日期（ISO 8601 格式）。
-  - `Notes`（可選）：任何補充說明（例如相依性衝突處理、特殊設定、binding redirect 註記）。
-
-- 規範：
-  - 當以 NuGet 新增且加入專案參考後，必須在 `Reference.json` 中加入該參考的條目（包含 `PackageId` 與 `PackageVersion`）。
-  - 若已下載 NuGet 套件但尚未加入預設專案參考（未在 csproj 中引用或未產生實際參考），則不應將該套件寫入 `Reference.json`。
-  - 直接以檔案方式（File）加入的 DLL 參考，必須在 `SourcePath` 中紀錄實際 DLL 檔名與相對路徑，並在 `Notes` 中註明來源（例如內部產物或第三方發行檔）。
-  - 專案參考（Project）應以專案名稱與其 `TargetFramework` 記錄，並記錄該專案輸出之主要 DLL 名稱於 `SourcePath`。
-  - 每次變更參考（新增、移除、版本升級）時，PR 內必須包含 `Reference.json` 的同步變更，且在 PR 描述中列出變更摘要。
-  - 建議在 CI 中加入驗證步驟，檢查 `Reference.json` 與實際專案檔（csproj / props / targets）中列出的參考是否一致；若不一致則使 CI 失敗並要求修正。
-
-- 範例（簡化）：
-
-  {
-      "References": [
-          {
-              "Name": "Newtonsoft.Json",
-              "Source": "NuGet",
-              "SourcePath": "packages\\Newtonsoft.Json.13.0.1\\lib\\net6.0\\Newtonsoft.Json.dll",
-              "PackageId": "Newtonsoft.Json",
-              "PackageVersion": "13.0.1",
-              "TargetFramework": "net6.0",
-              "PublishTarget": "",
-              "AddedDate": "2025-12-01T12:00:00Z",
-              "Notes": "Used for JSON serialization"
-          }
-      ]
-  }
-
-- 注意事項：
-  - `Reference.json` 為團隊協作紀錄，應納入版本控制（git）並由開發者在變更時維護；不得以自動在運行時修改該檔案的方式管理參考。
-  - 若發現 Reference 與實際相依性不符，需在 PR 中說明原因並修正，使專案在本地與 CI 都能成功還原與建置。
-
 ## 測試與文件
 - 變更核心邏輯時，請附上單元測試覆蓋行為。
 - 若例外使用 `var`/`dynamic`，在 PR 說明中註明並將該決策記錄於變更日誌或相對文件。
@@ -123,4 +80,4 @@
 
 ---
 
-若需本規範的範例程式碼片段、`Reference.json` 範本、或要我同時建立/提交 `Reference.json` 與/或 `.editorconfig`（例如設定 4 空格縮排與大括號風格檢查）來搭配此規範，請回覆告知，我會一併建立
+若需本規範的範例程式碼片段或要我同時建立或更新 `.editorconfig`（例如設定 4 空格縮排與大括號風格檢查）來搭配此規範，請回覆告知，我會一併建立
