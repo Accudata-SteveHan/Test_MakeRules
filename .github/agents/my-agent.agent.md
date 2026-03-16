@@ -1,8 +1,5 @@
 ---
-
-
-name:"1234"
-description:"ha ha ha"
+description:ha ha ha
 ---
 
 # My Agent
