@@ -1,7 +1,13 @@
 {
   "ExpandedNodes": [
-    ""
+    "",
+    "\\.github",
+    "\\.github\\agents",
+    "\\agent",
+    "\\build-file",
+    "\\doc",
+    "\\doc\\dev-guide"
   ],
-  "SelectedNode": "\\CONTRIBUTING.md",
+  "SelectedNode": "\\build-file\\Directory.Build.targets",
   "PreviewInSolutionExplorer": false
 }
