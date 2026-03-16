@@ -1,0 +1,130 @@
+﻿# CONTRIBUTING_ERRCONTROL.md
+
+## 例外處理與錯誤碼規範
+
+本文件定義專案中例外處理、錯誤碼、日誌與可觀測性的統一規範，確保系統具有可預測的故障處理、易追蹤的錯誤路徑，以及生產環境中的可維護性與可診斷性。
+
+---
+
+## 1. 例外處理與錯誤碼規範
+
+### 1.1 核心原則（精簡）
+
+- 任何捕捉到的 `Exception` 必須被重新拋出（`throw` 或包裝後 `throw`），不得吞例外。Log 與 Error code 的行為依各層級規範處理。
+- 預期錯誤（業務驗證、輸入錯誤等）使用結構化 Result/錯誤識別字串回傳，**不以例外作為業務流控制**。
+- 非預期例外（系統錯誤、未預期執行時例外）必須拋出並傳播到可集中處理的邊界（API 層或全域中介）。
+- 層級責任：DAL/Infra 可記錄並包裝或轉換錯誤識別字串；Application 可做重試/降級後 rethrow 或回傳 Result；Presentation 層處理最終回應。
+
+---
+
+### 1.2 錯誤識別字串策略（新規範）
+
+- 優先重用現有錯誤代碼來源（Windows 系統錯誤代碼、第三方元件的錯誤代碼或狀態碼）。
+- 儘量不要新增 `enum` 或專門的 ErrorCode class；新增枚舉會增加映射與辨識負擔，且不利於跨系統查證。
+- 若需自定義錯誤識別，採用結構化字串格式：`[SCOPE]_[SHORT_CODE]_[BRIEF]` 或你偏好的 `[ERROR_CODE]_[ERROR_MESSAGE]`，例如：
+  - `SYS_3001_DB_CONN_FAILED`
+  - `EXT_PAYMENT_TIMEOUT`
+  - `BIZ_VALIDATION_MISSING_CUSTOMERID`
+- 在日誌與 API 回應中使用此字串作為錯誤識別（ErrorInfo.Code 為 string），必要時記錄原始第三方錯誤代碼於 ErrorInfo.Details。
+- 示例（錯誤回傳物件）：
+
+```csharp
+public class ErrorInfo
+{
+    public string Code { get; set; }            // e.g. "SYS_3001_DB_CONN_FAILED" or third-party code
+    public string Message { get; set; }         // 對外友善訊息
+    public string InternalMessage { get; set; } // 內部偵錯訊息
+    public Dictionary<string,string> Details { get; set; }
+}
+```
+
+---
+
+### 1.3 精簡範例（每項目短小示例）
+
+1) 禁止吞例外
+
+```csharp
+try { await _repo.SaveAsync(entity); }
+catch (Exception) { /* 禁止 */ }
+```
+
+2) 必須記錄並重新拋出
+
+```csharp
+try { await _repo.SaveAsync(entity); }
+catch (DbUpdateException ex)
+{
+  _logger.LogError(ex, "DB save failed {OrderId}", order.Id);
+  throw; // 不可吞
+}
+```
+
+3) 層級轉換錯誤識別（示例）
+
+```csharp
+// Infrastructure 層: 捕捉第三方代碼並使用字串識別
+catch (SqlException ex)
+{
+  _logger.LogError(ex, "DB error");
+  throw new ExternalServiceException("SYS_3001_DB_CONN_FAILED", ex);
+}
+```
+
+4) 預期業務錯誤回傳 Result
+
+```csharp
+if (!valid) return Result.Error("BIZ_VALIDATION_MISSING_CUSTOMERID", "CustomerId required");
+```
+
+說明：任何 catch 到的 Exception 若無確切恢復（retry、fallback）策略，應記錄後 rethrow；若執行恢復，且仍然失敗，最後也必須 rethrow。
+
+---
+
+### 1.4 層級處理原則（簡潔）
+
+- **DAL/Infrastructure**：重用系統/第三方代碼；若需要，建立字串識別並記錄原始代碼於 Details，之後 rethrow 或包裝後 throw。
+- **Application**：可做重試/補救（短期退避、降級）；不可吞例外，恢復失敗則記錄並 rethrow 或回傳 Result（若為預期業務錯誤）。
+- **Presentation/API**：做最後一層捕捉，記錄（含 CorrelationId）、將錯誤轉為對外安全的 API 回應（使用 ErrorInfo.Code 字串，不回傳 stack trace）。
+
+---
+
+### 1.5 檢查清單（必做）
+
+- [ ] 所有 catch 塊要麼做有效恢復，要麼記錄並 rethrow。
+- [ ] 禁止空的 catch 或吞例外。
+- [ ] 優先使用現有的 Windows/第三方錯誤代碼；避免新增 enum ErrorCode 類別。
+- [ ] 自定義錯誤識別使用結構化字串（`[SCOPE]_[CODE]_[BRIEF]` 或 `[ERROR_CODE]_[ERROR_MESSAGE]`）。
+- [ ] 日誌與 ErrorInfo 包含 CorrelationId，但不含敏感資料。
+
+---
+
+## 2. 日誌與可觀測性規範（精簡）
+
+### 2.1 原則要點
+
+- 使用結構化日誌，包含至少：CorrelationId、Module、Action、Level、Timestamp、ErrorCode（字串）。
+- 生產環境最低等級 Info；Error/Critical 必須含堆疊與 ErrorCode。
+- 禁止記錄敏感資料。
+- 使用 `_logger.IsEnabled(Level)` 避免昂貴的日誌組裝。
+
+### 2.2 最小範例
+
+```csharp
+_logger.LogError(ex, "Error CreateOrder {OrderId} Correlation:{CorrelationId} Code:{Code}", order.Id, correlationId, "SYS_3001_DB_CONN_FAILED");
+throw;
+```
+
+---
+
+## 3. 其他注意事項（簡短）
+
+- 第三方套件例外：文件化其錯誤代碼並在呼叫點記錄原始代碼到 ErrorInfo.Details。
+- 非同步上下文：避免 `.Result`/`.Wait()`；例外行為一致（須 rethrow 或回傳 Result）。
+
+---
+
+## 4. 參考資源
+- .NET Exception Handling Best Practices (Microsoft)
+- Serilog docs
+- Microservices Patterns - Correlation ID

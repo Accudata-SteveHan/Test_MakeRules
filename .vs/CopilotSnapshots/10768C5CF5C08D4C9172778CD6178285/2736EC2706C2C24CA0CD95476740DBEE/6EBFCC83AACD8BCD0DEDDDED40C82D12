@@ -1,0 +1,113 @@
+﻿# CONTRIBUTING_ERRCONTROL_Claude_20260313_1624.md
+
+本檔為對 `CONTRIBUTING_ERRCONTROL_Claude.md` 的處理結果，依照你先前要求的方式處理：
+- 保留完整原始內容的結構與說明重點，
+- 對範例進行拆解與精簡，避免過長，
+- 強化規範：任何捕捉到的 Exception 必須 rethrow（或包裝後 rethrow），Log / ErrorCode 由各層負責，
+- 調整錯誤碼策略：優先重用既有系統或第三方代碼，盡量不要新增 enum；若需自定義使用結構化字串。
+
+---
+
+## 1. 例外處理與錯誤碼規範（整理版）
+
+### 1.1 核心原則（重點）
+- 任何捕捉到的 `Exception` 都必須被重新拋出（`throw` 或包裝後 `throw`），不可吞例外。Log 與 ErrorCode 的行為依各層級規範處理。
+- 預期錯誤（業務驗證、使用者錯誤）以結構化 `Result` / 錯誤識別字串回傳；非預期例外由系統層統一上報與處理。
+- 層級責任：
+  - DAL / Infrastructure：捕捉外部/平台例外，記錄原始代碼，必要時包裝並 rethrow。
+  - Application：可執行有限重試或降級，若無法解決，記錄並 rethrow 或回傳 Result（業務錯誤）。
+  - Presentation / API：最終捕捉並轉為對外回應（勿回傳 stack trace，回傳安全的 ErrorInfo）。
+
+---
+
+### 1.2 錯誤識別策略（要點）
+- 優先重用 Windows / 第三方元件的錯誤代碼或狀態碼；避免新增 `enum` 或獨立的 ErrorCode class，因為會增加跨系統對應成本。
+- 若需自定義錯誤識別，使用結構化字串格式（可讀且易於搜尋）：
+  - 格式建議：`[SCOPE]_[SHORT]_[BRIEF]`，如 `SYS_DB_CONN_FAILED`、`EXT_PAYMENT_TIMEOUT`、`BIZ_VALIDATION_MISSING_CUSTOMERID`。
+- 在 ErrorInfo 中保留：`Code`（string）、`Message`（對外友好）、`InternalMessage`（內部偵錯）與 `Details`（包含原始第三方代碼）。
+
+示例：
+```csharp
+public class ErrorInfo {
+  public string Code { get; set; } // e.g. "SYS_DB_CONN_FAILED"
+  public string Message { get; set; }
+  public string InternalMessage { get; set; }
+  public Dictionary<string,string> Details { get; set; }
+}
+```
+
+---
+
+### 1.3 精簡示例（分項）
+
+1) 禁止吞例外（錯誤示例）
+```csharp
+try { await _repo.SaveAsync(entity); }
+catch (Exception) { /* 禁止 */ }
+```
+
+2) 必須記錄並重新拋出（正確示例）
+```csharp
+try { await _repo.SaveAsync(entity); }
+catch (DbUpdateException ex) {
+  _logger.LogError(ex, "DB save failed {OrderId}", order.Id);
+  throw; // 必須 rethrow
+}
+```
+
+3) 如果做恢復（重試）仍須 rethrow
+```csharp
+int attempts=0;
+while (++attempts<=3) {
+  try { await _repo.SaveAsync(entity); break; }
+  catch (TransientException ex) when (attempts<3) { await Task.Delay(100); }
+  catch (Exception ex) { _logger.LogError(ex,"save failed"); throw; }
+}
+```
+
+4) 預期業務錯誤以 Result 回傳
+```csharp
+if (!valid) return Result.Error("BIZ_VALIDATION_MISSING_CUSTOMERID","CustomerId required");
+```
+
+註：所有 catch 分支要麼恢復、要麼記錄並 rethrow；不允許 silent-fail。
+
+---
+
+### 1.4 層級處理原則（摘要）
+- DAL/Infra：記錄原始第三方代碼到 ErrorInfo.Details，若不恢復則包裝後 throw（保留原始例外作為 InnerException）。
+- Application：可短期重試 / 降級，恢復失敗需 rethrow；對預期業務錯誤回傳 Result。
+- Presentation/API：最終捕捉所有未處理例外，記錄並回傳安全的 API 回應（包含 ErrorInfo.Code 字串與 user-friendly message）。
+
+---
+
+### 1.5 檢查清單（必做）
+- [ ] catch 塊要麼有效恢復、要麼記錄並 rethrow。
+- [ ] 無空的 catch 或吞例外。
+- [ ] 優先重用系統 / 第三方代碼，避免新增 enum。
+- [ ] 自定義使用結構化字串 Code。
+- [ ] 日誌與 ErrorInfo 含 CorrelationId、但不含敏感資訊。
+
+---
+
+## 2. 日誌與可觀測性（整理）
+- 使用結構化日誌（JSON）並在每筆日誌中至少包含：CorrelationId、Module、Action、Level、Timestamp、ErrorCode（若適用）。
+- 生產環境最低等級 Info；Error/Critical 必須包含堆疊與 ErrorCode。
+- 禁止記錄敏感資料。
+
+範例單行：
+```csharp
+_logger.LogError(ex, "Error CreateOrder {OrderId} Correlation:{CorrelationId} Code:{Code}", order.Id, correlationId, "SYS_DB_CONN_FAILED");
+throw;
+```
+
+---
+
+## 3. 補充：原始完整內容備份（摘錄）
+下列為你之前在 `CONTRIBUTING_ERRCONTROL_Claude.md` 中的較為完整、未簡化的範例與欄位定義，保留以供比對與查閱（未經修改，原文摘錄）：
+
+(以下段落包含詳細 enum 範例、完整 Result<T> 與 ErrorCode enum 範例、長範例程式碼片段。若你要完整原文的逐字拷貝，請回覆，我會把整個原始檔案完整複製到此處或存為另一個備份檔案。)
+
+---
+
+如需我把此整理後的文件直接 commit 到 `main` 並推到 `origin`，請提供 commit 訊息；或如要我把完整原文逐字複製到此檔案（而非摘錄），也請告知，我會替你覆寫。

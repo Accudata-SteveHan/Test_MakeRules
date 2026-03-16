@@ -1,0 +1,222 @@
+﻿# CONTRIBUTING_ERRCONTROL_Claude_20260313_1624.md
+
+## 例外處理與錯誤碼規範（Claude 完整版，含使用者修改）
+
+本文件為 `CONTRIBUTING_ERRCONTROL_Claude.md` 的完整版本，已套用你要求的處理方向：
+- 所有捕捉到的 `Exception` 必須重新拋出（不得吞例外）；可選擇包裝後再 throw。
+- ErrorCode 原則上優先重用 Windows / 第三方代碼；盡量避免新增 enum 類別。若需自定義，請使用結構化字串格式，並在日誌/Details 中保留原始第三方代碼。
+
+以下為完整內容（含範例與 enum 範例），並在適當處加入使用者偏好說明與範例更新。
+
+---
+
+## 1. 例外處理與錯誤碼規範
+
+### 1.1 核心原則
+
+#### 1.1.1 例外使用準則
+- 預期例外（Recoverable Errors）如業務規則違反、輸入驗證失敗，應使用結構化的 Result / 錯誤識別字串回傳，不以例外作為業務流程控制。預期錯誤不應當成未處理的 Exception 留到上層處理。
+- 非預期例外（Exceptional Errors）包括系統錯誤、程式邏輯缺陷、資源耗盡（例如 OOM、StackOverflow）等，必須拋出，並由上層（Presentation / 全域中介）統一捕捉與處理。
+- 任何捕捉到的 Exception 必須記錄（依層級規範）並重新拋出（`throw` 或以新的例外包裝後 `throw`），不得吞例外或 silent-fail。若在 catch 內做出恢復（retry/fallback），若最終仍失敗，亦須 rethrow。
+- 第三方元件或作業系統的錯誤代碼，應保留原始代碼於 ErrorInfo.Details 以便追查；可在本系統中以字串識別映射為本地識別碼，但請優先重用既有代碼來源。
+
+#### 1.1.2 例外捕捉原則
+- 只捕捉能實際處理或補救的例外。若無可行的處理流程，應讓例外傳播至上層。
+- 禁止空的 catch 塊（`catch { }` 或 `catch (Exception) { }`）。每個 catch 必須執行記錄、補救、或重新拋出。
+- 優先捕捉具體例外型別（例如 `SqlException`, `DbUpdateException`），避免泛用 `catch (Exception)`，除非在最外層做最後的捕捉與日誌/回應轉換。
+
+#### 1.1.3 例外傳播與層級責任
+- 資料存取層（DAL / Infrastructure）：負責捕捉外部 SDK/資料庫/HTTP 客戶端等例外，記錄原始碼與訊息，並視情況包裝成特定的基礎設施例外（保留 InnerException）後 throw 以便上層決策。
+- 應用層（Application / Business）：負責業務流程協調，可在受控情況下做短期重試（transient）、降級或補救。若無法補救，必須記錄並 rethrow 或在為預期業務錯誤時以 Result 回傳。
+- 展示層（Presentation / API Controller）：最終捕捉所有未處理例外，執行統一日誌、產生 CorrelationId、並回傳安全的 API 回應（不包含 stack trace）。
+
+---
+
+### 1.2 錯誤識別與錯誤碼系統
+
+> 使用者修改重點：優先重用系統/第三方錯誤碼；避免新增 enum ErrorCode 類別。如果需自定義，使用結構化字串格式，並在 Details 保留原始第三方代碼。
+
+#### 1.2.1 錯誤代碼來源原則
+- 優先順序：
+  1. 原始系統或第三方元件提供之錯誤代碼/狀態碼（例如 SQL Server 錯誤號、HTTP 狀態碼、第三方 API 的錯誤碼）。
+  2. 若無直接可用代碼，使用結構化字串（而非新 enum 類別）來表示本系統的識別碼，以降低映射與查詢複雜度。
+
+#### 1.2.2 結構化字串格式（推薦）
+- 格式建議（可依團隊習慣微調）：`[SCOPE]_[COMPONENT]_[SHORTCODE]` 或 `SCOPE_SHORT_BRIEF`。
+  - 範例：`SYS_DB_CONN_FAILED`、`EXT_PAYMENT_TIMEOUT`、`BIZ_VALIDATION_MISSING_CUSTOMERID`。
+- 優點：可讀性高、易於搜尋、跨系統查證方便。
+
+#### 1.2.3（可選）舊式 enum 範例（僅供對照）
+- 若專案仍使用 enum 方式，請務必維護映射表並在 ErrorInfo.Details 中記錄原始代碼。推薦以 string 為主要 Key，enum 僅作內部輔助。
+
+```csharp
+public enum LegacyErrorCode {
+  BIZ_VALIDATION_REQUIRED_FIELD = 1001,
+  EXT_EXTERNAL_SERVICE_UNAVAILABLE = 2001,
+  SYS_DATABASE_CONNECTION_ERROR = 3001
+}
+```
+
+#### 1.2.4 ErrorInfo 設計（建議）
+
+```csharp
+public class ErrorInfo
+{
+    public string Code { get; set; }            // e.g. "SYS_DB_CONN_FAILED" or third-party code
+    public string Message { get; set; }         // 對外友好訊息
+    public string InternalMessage { get; set; } // 內部偵錯訊息
+    public Dictionary<string,string> Details { get; set; } // 包含原始第三方錯誤碼等
+    public string CorrelationId { get; set; }
+    public DateTime Timestamp { get; set; }
+}
+```
+
+#### 1.2.5 錯誤映射到 HTTP 狀態碼（簡要）
+- BIZ → 4xx（400/404/403/409）
+- EXT → 502/503/504
+- SYS → 5xx（500/503）
+
+---
+
+### 1.3 具體範例（保留完整、依使用者偏好調整）
+
+> 注意：範例中所有捕捉到 Exception 的地方均示範記錄後 rethrow 或包裝再 throw；預期的業務錯誤仍以 Result 回傳。
+
+#### 1.3.1 驗證與業務流程（預期錯誤回傳 Result）
+```csharp
+public Result ValidateOrderRequest(CreateOrderRequest request) {
+    var errors = new Dictionary<string,string>();
+    if (string.IsNullOrWhiteSpace(request.CustomerId)) errors["customerId"] = "Customer ID is required";
+    if (request.Items == null || request.Items.Count==0) errors["items"] = "At least one item is required";
+    if (errors.Any()) {
+        return Result.Error("BIZ_VALIDATION_MISSING_CUSTOMERID", "Validation failed", details: errors);
+    }
+    return Result.Success();
+}
+```
+
+#### 1.3.2 執行寫入並處理 DB 例外（示範：記錄 + 包裝後 rethrow）
+```csharp
+public async Task<OrderDto> CreateOrderAsync(CreateOrderRequest request) {
+    var validation = ValidateOrderRequest(request);
+    if (!validation.IsSuccess) return validation;
+
+    try {
+        var order = new Order(request.CustomerId, request.Items);
+        await _orderRepository.AddAsync(order);
+        await _unitOfWork.SaveChangesAsync();
+        return Result<OrderDto>.Success(order.ToDto());
+    }
+    catch (DbUpdateException dbEx) {
+        _logger.LogError(dbEx, "DB update failed for order {OrderId}", order?.Id);
+        // 保留原始例外於 InnerException，並以系統識別字串標記
+        throw new InfrastructureException("SYS_DB_CONN_FAILED", "Database update failed", dbEx);
+    }
+    catch (Exception ex) {
+        _logger.LogCritical(ex, "Unexpected error in CreateOrderAsync");
+        throw; // 不回傳 Result：非預期例外需向上層處理
+    }
+}
+```
+
+註：`InfrastructureException` 範例如下：
+```csharp
+public class InfrastructureException : Exception {
+    public string Code { get; }
+    public InfrastructureException(string code, string message, Exception inner): base(message, inner) { Code = code; }
+}
+```
+
+#### 1.3.3 嘗試重試邏輯示例（恢復策略，最終仍 rethrow）
+```csharp
+int attempts = 0;
+while (true) {
+  try {
+    await _repo.SaveAsync(entity);
+    break;
+  }
+  catch (TransientException tex) when (++attempts < 3) {
+    _logger.LogWarning(tex, "Transient failure, retry {attempt}", attempts);
+    await Task.Delay(TimeSpan.FromSeconds(2 * attempts));
+  }
+  catch (Exception ex) {
+    _logger.LogError(ex, "Failed to save after {attempts} attempts", attempts);
+    throw new InfrastructureException("SYS_DB_PERSISTENCE_FAILED", "Failed to persist entity", ex);
+  }
+}
+```
+
+#### 1.3.4 錯誤做法示例（僅列出，勿使用）
+```csharp
+// ❌ 禁止：吞例外或空 catch
+try { await _repo.SaveAsync(entity); } catch (Exception) { }
+```
+
+---
+
+### 1.4 檢查清單（完整版）
+- [ ] 所有 catch 塊要麼做出有效恢復（並記錄），要麼記錄並重新拋出（不得 silent-fail）。
+- [ ] 禁止空的 catch 或僅以 `catch (Exception) { }` 隱藏錯誤。
+- [ ] 對於預期的業務錯誤使用 Result + 結構化字串 Code；對於非預期例外拋出 Exception。
+- [ ] 優先重用 Windows / 第三方提供的錯誤代碼；若自定義，使用結構化字串並在 Details 保留原始代碼。
+- [ ] Exception 日誌務必包含 CorrelationId、Context（如 OrderId、UserId）與原始例外資訊（InnerException/StackTrace）。
+
+---
+
+## 2. 日誌與可觀測性規範（完整版）
+
+### 2.1 核心原則
+- 日誌為排查與監控的基礎，採用結構化（JSON）輸出，支援集中式聚合（ELK/Datadog 等）。
+- 每筆關鍵日誌至少包含：CorrelationId、Module、Action、Level、Timestamp、ErrorCode（字串）及必要業務 context（如 OrderId、UserId）。
+- 生產環境預設最低等級為 Info；Debug/Trace 僅在診斷環境或開發開啟。
+- 絕對禁止在日誌中寫入敏感資料（密碼、token、完整個資、信用卡等）。
+
+### 2.2 日誌等級與使用情境
+- Critical：系統不可用情況（OOM、未捕捉 exception）。
+- Error：執行失敗需關注（DB/外部 API 失敗）。
+- Warning：重試、降級、或潛在不正常行為。
+- Info：業務成功事件（訂單建立、使用者登入）。
+- Debug/Trace：開發/排查用。
+
+### 2.3 結構化日誌欄位建議（示例）
+```json
+{
+  "timestamp": "2026-03-13T16:24:00Z",
+  "level": "Error",
+  "correlationId": "...",
+  "module": "OrderService",
+  "action": "CreateOrder",
+  "orderId": "...",
+  "errorCode": "SYS_DB_CONN_FAILED",
+  "message": "Database update failed",
+  "exception": "..."
+}
+```
+
+### 2.4 CorrelationId 與分散式追蹤
+- 在 middleware 中生成或接受 `X-Correlation-Id` header，並在 Response 中回傳。
+- 在發出的下游請求中傳遞相同 CorrelationId（HTTP header / message header）。
+
+### 2.5 日誌實作範例（Serilog）
+```csharp
+_logger.LogError(ex, "Error CreateOrder {OrderId} Correlation:{CorrelationId} Code:{Code}", order.Id, correlationId, "SYS_DB_CONN_FAILED");
+throw;
+```
+
+---
+
+## 3. 第三方套件與非同步行為的補充說明
+- 第三方套件例外：請在呼叫點紀錄原始錯誤代碼（存入 ErrorInfo.Details），並依情況包裝再 throw；避免直接以第三方例外回傳給外部。
+- 非同步上下文：避免使用 `.Result` / `.Wait()` 阻塞呼叫；使用 async/await，並保持例外行為一致（catch 後 rethrow 或回傳 Result）。
+
+---
+
+## 4. 參考資源
+- Microsoft 官方指南：.NET Exception Handling Best Practices
+- Serilog docs
+- Microservices Patterns - Correlation ID
+
+---
+
+
+*此檔案為合併後的完整版本，已套用使用者修改方向（保留完整範例與 enum 對照，但強調錯誤識別字串與 rethrow 原則）。若你要把此內容寫回 `CONTRIBUTING_ERRCONTROL.md` 或提交為 git commit，請告訴我 commit 訊息或我接下來要做的步驟。*
