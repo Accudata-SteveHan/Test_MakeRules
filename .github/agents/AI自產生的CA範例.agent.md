@@ -4,8 +4,8 @@
 # To make this agent available, merge this file into the default repository branch.
 # For format details, see: https://gh.io/customagents/config
 
-name:AI自產生的CA範例.agent.md
-description:AI自產生的CA範例 (Custom Agent Spec)
+name: "AI自產生的CA範例.agent.md"
+description: "AI自產生的CA範例 (Custom Agent Spec)"
 ---
 
 # My Agent
