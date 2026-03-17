@@ -1,0 +1,122 @@
+﻿# Logging 開發導入指南
+
+版本: 1.0
+
+目的
+-----
+建立團隊一致的日誌 (logging) 規範，區分「API 交易/運作日誌」與「偵錯/開發用日誌」，以便於運維、除錯、安全與合規性管理。
+
+適用範圍
+-----
+此文件適用於所有加入本專案的開發人員，涵蓋伺服端服務、API 層、背景工作程序與共用函式庫的日誌實作與設定。
+
+日誌類型
+-----
+1. API / 交易日誌 (Operational / Audit Logs)
+   - 目的：記錄對外 API 請求、重要流程步驟、關鍵狀態改變、審計事件與錯誤。供運維、監控、稽核與事後調查使用。
+   - 特性：永久性/中長期保存、結構化 (JSON)、包含流水編號/Correlation ID、不包含敏感資訊（或已遮罩）。
+
+2. 偵錯日誌 (Debug / Developer Logs)
+   - 目的：協助開發與本地化除錯，紀錄變數、函式進入/離開、詳細堆疊資訊等。
+   - 特性：高詳盡度、可在開發或測試環境啟用、在生產環境預設關閉或僅在特定情境短期開啟。
+
+日誌等級
+-----
+使用標準日誌層級（依嚴重性由低到高）：
+- Trace (非常詳細，僅開發時開啟)
+- Debug (除錯資訊，開發/測試使用)
+- Information (一般運作資訊，例如請求進入/離開、成功事件)
+- Warning (可能的問題或非阻斷性異常)
+- Error (可捕捉的錯誤)
+- Critical / Fatal (導致系統不可用的嚴重錯誤)
+
+結構化日誌格式
+-----
+- 以結構化格式（JSON）為主，欄位至少包含：
+  - timestamp（ISO 8601）
+  - level
+  - message
+  - service / application
+  - environment（production/staging/dev）
+  - correlation_id（或 request_id）
+  - user_id（如適用，非必填）
+  - trace_id/span_id（若使用分散式追蹤）
+  - meta / properties（關鍵欄位的結構化物件）
+
+Correlation ID 與分散式追蹤
+-----
+- 每一個外部請求應生成或傳遞一個 `correlation_id`（例如透過 HTTP header `X-Correlation-ID`）。
+- 所有與該請求相關的日誌都必須包含相同的 `correlation_id`，以便串接查詢。
+- 若專案採用分散式追蹤（OpenTelemetry / Jaeger / Zipkin），日誌應包含 `trace_id` 與 `span_id`。
+
+敏感資訊與遮罩
+-----
+- 日誌不得紀錄機敏資訊（PII、信用卡號、密碼、金鑰、完整個人身份資料等）。
+- 必須在寫入日誌前對敏感欄位進行遮罩或省略。例如：信用卡顯示為 `**** **** **** 1234`。
+- 若需記錄部分敏感資訊作偵錯用途，需先取得負責人授權並設定短期保留。
+
+保留政策與儲存
+-----
+- API / 交易日誌：至少保存 30 天（依公司合規/法規可延長）。
+- 偵錯日誌：視情境保留，生產環境通常只保留短期或不儲存詳細 Debug 資訊。
+- 儲存：建議使用集中式日誌平台（ELK/Elastic, Splunk, Datadog, or cloud provider logging）並啟用索引與檔案輪替。
+
+設定與環境管理
+-----
+- 日誌等級應由設定檔或環境變數控制（例如 `LOG_LEVEL`、`ASPNETCORE_ENVIRONMENT`）。
+- 預設生產環境將 `LOG_LEVEL=Information` 或 `Warning`，`Debug/Trace` 須由臨時設定或遠端開關啟用。
+- 使用集中式設定或 Feature Flag 控制生產環境的詳細日誌開關。
+
+技術選型（範例）
+-----
+- .NET: 使用 `Microsoft.Extensions.Logging`（ILogger），搭配 Serilog（輸出 JSON）或 Seq/ELK Sink。
+- Node.js: 使用 `pino` 或 `winston` 並輸出結構化 JSON。
+- Java: 使用 `SLF4J` + `Logback` 並啟用 JSON Encoder。
+
+簡單實作範例（C# 舉例）
+-----
+- 在 API 起點（Middleware）保證每請求有 `correlation_id`：
+  - 從 `X-Correlation-ID` 取得或生成一個 UUID，並加入 logging scope。
+- 使用範例：
+  - `using (logger.BeginScope(new Dictionary<string, object>{{"correlation_id", correlationId}})) { logger.LogInformation("User login succeeded", ...); }`
+
+開發者準則（何時記錄什麼）
+-----
+- 記錄的內容應能讓後續調查還原流程：事件、狀態、失敗原因（非堆疊追蹤時）、關聯 ID。 
+- 不要在正常流程中過度記錄大量資料（例如整個回應 body）到 Information 等級。大資料僅在 Debug/Trace 級別或外部檔案儲存。
+- 捕捉 Exception 時：
+  - 在有理由時使用 `Error` 並包含例外訊息與必要上下文（不要包含敏感資料）。
+  - 若發生不可恢復錯誤，記錄 `Critical` 並觸發告警。
+
+審核與代碼審查要點
+-----
+- PR 檢查：確保日誌等級正確、無機敏資料、包含 correlation_id、結構化欄位命名一致。
+- 禁止提交將大量敏感資料寫入日誌的程式碼。
+
+常見錯誤與禁止事項
+-----
+- 禁止在生產日誌中寫入明文密碼、密鑰或完整個人資料。
+- 禁止在高頻呼叫路徑寫大量同步 I/O 的日誌呼叫（會造成效能問題）。
+- 不要用日誌替代監控/度量系統（重度指標請使用 metrics 系統）。
+
+入門與範例檢查清單
+-----
+- 請檢查：
+  - 是否有 `correlation_id`？
+  - 是否使用設定控制等級？
+  - 是否輸出為 JSON 結構化格式？
+  - 是否遮罩所有敏感欄位？
+
+聯絡與維護
+-----
+- 若需變更日誌政策或新增日誌欄位，請提交 RFC 並在 PR 中註明對應影響（保留、儲存成本、合規面）。
+- 日誌相關重大變更需由資深工程師與運維共同審核。
+
+附錄：常見範例片段
+-----
+- Correlation ID middleware、例外處理 middleware、Serilog JSON Sink 的基本 config 範例，請參考團隊共用樣板存放庫（若有）。
+
+
+最後更新：2026-03-17
+
+

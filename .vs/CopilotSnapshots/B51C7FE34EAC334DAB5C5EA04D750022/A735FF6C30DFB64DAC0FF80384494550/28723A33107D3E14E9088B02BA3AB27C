@@ -1,0 +1,110 @@
+﻿# CONTRIBUTING_LOGGING.md
+
+## 目的
+本文件定義專案的日誌（logging）實作與貢獻準則，包含「API / 交易日誌」與「偵錯 / 開發用日誌」的使用情境、格式、等級與保留政策，確保日誌可供運維、監控、稽核與除錯使用且不違反資安規範。
+
+## 適用範圍
+適用於本專案所有伺服端服務、API 層、背景工作程序與共用函式庫。新進開發者需遵守本文件規範，PR 審查時亦會檢查日誌相關實作。
+
+## 日誌類型
+1. API / 交易日誌（Operational / Audit）
+   - 目的：記錄對外或系統關鍵交易、狀態變更、審計事件與可追蹤的錯誤。
+   - 特性：結構化（JSON）為主、長期保存或按合規需求保存、不得包含未遮罩的敏感資訊、必含 correlation id。
+
+2. 偵錯日誌（Debug / Trace）
+   - 目的：協助開發與本地化除錯，記錄詳細流程、變數與執行緒/堆疊等資訊。
+   - 特性：高詳盡度、預設在開發/測試環境啟用，生產環境預設關閉或僅短期啟用。
+
+## 日誌等級
+建議使用標準等級：Trace < Debug < Information < Warning < Error < Critical。等級使用原則：
+- Production 預設至少為 `Information` 或 `Warning`。
+- 調查問題時可臨時提升至 `Debug/Trace`，需有開關與保留策略。
+
+## 結構化日誌欄位
+日誌應以結構化 JSON 為主，至少包含：
+- `timestamp`：ISO 8601 時間戳
+- `level`：日誌等級
+- `service`：服務名稱或模組
+- `environment`：production/staging/dev
+- `correlation_id` 或 `request_id`
+- `message`：描述文字
+- `meta`：物件，放置額外結構化欄位（如 user_id、order_id 等）
+
+若使用分散式追蹤，應包含 `trace_id` / `span_id`。
+
+## Correlation ID / 追蹤 ID 規範（必要更動）
+- 程式啟動或連線（connection/request）進入時，必須在最早點生成或導入唯一追蹤編號（correlation_id / request_id）。
+  - 若外部請求已提供（例如 HTTP header `X-Correlation-ID`），應直接使用並傳遞；否則於接入層生成一個 UUID 並注入全域上下文。
+  - 所有後續日誌（含背景作業、非同步子流程）必須攜帶該編號，以利重現流程與串接查詢。
+- 建議在 application startup / connection accept 的 middleware 或 entry point 設置：在第一時間建立或採用 incoming id，並將其納入 logging scope 或 thread/context。
+- 日誌查詢、告警與追蹤流程依賴此 ID，請確保其在跨服務呼叫中被傳遞。
+
+## 記錄關鍵因子與變數
+- 在調查問題時，應將可參考的變數、參數、物件屬性等關鍵因子加入 `meta` 欄位，以利還原流程與定位問題。
+- 加入欄位範例：`user_id`、`order_id`、`transaction_id`、`status_code`、`step`、`payload_summary`。
+- 注意事項：
+  - 不得記錄未遮罩的敏感資料（如密碼、憑證、完整身分證號、信用卡完整號碼）。對敏感欄位應採遮罩或省略策略。
+  - 避免將大型物件或完整 payload 寫入日誌；可記錄摘要（例如 payload size、hash、或關鍵欄位值）。
+  - 每個日誌項目的 `meta` 應限定欄位與長度，避免無限制增長導致儲存與查詢負擔。
+
+## 保留與儲存策略
+- API / 交易日誌：視合規至少保存 30 天或依公司政策延長。
+- 偵錯日誌：在生產環境應短期保存或不儲存詳細 Debug 資訊。
+- 建議使用集中式日誌平台（ELK、Splunk、Datadog、或雲端 provider）並啟用索引與輪替。
+
+## 設定與開關管理
+- 日誌等級透過設定檔或環境變數控制（例 `LOG_LEVEL`、`ASPNETCORE_ENVIRONMENT`）。
+- 生產環境禁止直接在程式碼中硬編 `Debug/Trace` 為預設；需使用集中設定或 feature flag 控制。
+
+## 技術選型建議
+- .NET：使用 `Microsoft.Extensions.Logging`（ILogger）搭配 Serilog（輸出 JSON）。
+- Node.js：使用 `pino` 或 `winston` 並輸出結構化 JSON。
+- Java：使用 SLF4J + Logback 並啟用 JSON encoder。
+
+## 實作範例（C#）
+1. 在 middleware 保證每請求有 `correlation_id`：
+
+```csharp
+// 於 middleware 中：
+var correlationId = context.Request.Headers["X-Correlation-ID"].FirstOrDefault() ?? Guid.NewGuid().ToString();
+using (logger.BeginScope(new Dictionary<string, object>{{"correlation_id", correlationId}}))
+{
+    await _next(context);
+}
+```
+
+2. 記錄關鍵變數於 meta，避免敏感資料：
+
+```csharp
+logger.LogInformation("Order processed", new { correlation_id = correlationId, order_id = orderId, user_id = userId, payload_hash = ComputeHash(payload) });
+```
+
+3. 記錄 Error 時包含上下文但不得包含敏感資訊：
+
+```csharp
+try
+{
+    // ...
+}
+catch (Exception ex)
+{
+    logger.LogError(ex, "Failed to process order {OrderId}", orderId);
+    throw;
+}
+```
+
+## 開發者準則（何時記錄）
+- Information：記錄重要事件（請求開始/結束、主要流程成功）且不包含大量資料。
+- Warning：非阻斷性異常或可能造成問題的情境。
+- Error / Critical：異常或系統不可用情況，應附必要上下文與 correlation id。
+- Debug / Trace：僅供開發/測試使用，生產環境不可長期啟用。
+
+## 審查重點與禁止事項
+- PR 審查應確認：等級使用恰當、無敏感資料、包含 correlation_id、輸出為結構化格式。
+- 禁止在生產日誌中寫入明文密碼、金鑰或完整個人資料。
+
+---
+
+最後更新：2026-03-17
+
+
