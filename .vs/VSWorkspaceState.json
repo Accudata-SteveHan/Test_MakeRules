@@ -5,9 +5,10 @@
     "\\.github\\agents",
     "\\agent",
     "\\build-file",
-    "\\doc",
-    "\\doc\\dev-guide"
+    "\\build-file\\doc",
+    "\\build-file\\doc\\dev-guide_C#",
+    "\\build-file\\doc\\dev-guide_OracleSP"
   ],
-  "SelectedNode": "\\build-file\\Directory.Build.targets",
+  "SelectedNode": "\\.gitignore",
   "PreviewInSolutionExplorer": false
 }
